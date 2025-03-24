@@ -4,34 +4,14 @@ import bcrypt
 import json
 import os
 import base64
-from Crypto.Cipher import AES
-from Crypto.Hash import HMAC, SHA256
+from Crypto.Hash import SHA256
+from utils import encrypt_message, decrypt_message, generate_mac, verify_mac
 
 # Store User Accounts
 accounts = {}
 
 # Master Secret Key
 master_secret_key = os.urandom(32)
-
-def encrypt_message(message, key):
-    cipher = AES.new(key, AES.MODE_EAX)
-    nonce = cipher.nonce
-    ciphertext, tag = cipher.encrypt_and_digest(message.encode())
-    return base64.b64encode(nonce + tag + ciphertext).decode()
-
-def decrypt_message(encrypted_message, key):
-    data = base64.b64decode(encrypted_message)
-    nonce, tag, ciphertext = data[:16], data[16:32], data[32:]
-    cipher = AES.new(key, AES.MODE_EAX, nonce=nonce)
-    return cipher.decrypt_and_verify(ciphertext, tag).decode()
-
-def generate_mac(message, mac_key):
-    hmac = HMAC.new(mac_key, message.encode(), SHA256)
-    return base64.b64encode(hmac.digest()).decode()
-
-def verify_mac(message, mac, mac_key):
-    hmac = HMAC.new(mac_key, message.encode(), SHA256)
-    return base64.b64encode(hmac.digest()).decode() == mac
 
 def handle_client(client_socket):
     try:
@@ -43,11 +23,11 @@ def handle_client(client_socket):
             username = request["username"]
             password = request["password"]
             if username in accounts:
-                response = {"status": "error", "message": "Username already exists"}
+                response = {"status": "error", "message": "Username Already Exists"}
             else:
                 hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
                 accounts[username] = {"password": hashed_password, "balance": 0}
-                response = {"status": "success", "message": "Account created"}
+                response = {"status": "success", "message": "Account Created"}
 
         elif action == "authenticate":
             username = request["username"]
@@ -55,36 +35,52 @@ def handle_client(client_socket):
             if username in accounts and bcrypt.checkpw(password.encode(), accounts[username]["password"]):
                 response = {"status": "success", "master_secret": base64.b64encode(master_secret_key).decode()}
             else:
-                response = {"status": "error", "message": "Invalid credentials"}
+                response = {"status": "error", "message": "Invalid Credentials"}
 
         elif action in ["deposit", "withdraw", "balance"]:
             username = request["username"]
-            encrypted_data = request["data"]
-            mac = request["mac"]
+            if action in ["deposit", "withdraw"]:
+                encrypted_data = request["data"]
+                mac = request["mac"]
 
-            key = SHA256.new(master_secret_key).digest()
-            encryption_key = key[:16]
-            mac_key = key[16:]
+                key = SHA256.new(master_secret_key).digest()
+                encryption_key = key[:16]
+                mac_key = key[16:]
 
-            decrypted_data = decrypt_message(encrypted_data, encryption_key)
-            if not verify_mac(decrypted_data, mac, mac_key):
-                response = {"status": "error", "message": "MAC verification failed"}
-            else:
-                amount = int(decrypted_data.split(":")[-1])
-                if action == "deposit":
-                    accounts[username]["balance"] += amount
-                    response = {"status": "success", "message": "Deposit successful"}
-                elif action == "withdraw":
-                    if accounts[username]["balance"] >= amount:
-                        accounts[username]["balance"] -= amount
-                        response = {"status": "success", "message": "Withdrawal successful"}
-                    else:
-                        response = {"status": "error", "message": "Insufficient funds"}
-                elif action == "balance":
-                    response = {"status": "success", "balance": accounts[username]["balance"]}
+                decrypted_data = decrypt_message(encrypted_data, encryption_key)
+                if not verify_mac(decrypted_data, mac, mac_key):
+                    response = {"status": "error", "message": "MAC Verification Failed"}
+                else:
+                    amount = int(decrypted_data.split(":")[-1])
+                    if action == "deposit":
+                        accounts[username]["balance"] += amount
+                        response = {"status": "success", "message": "Deposit Successful"}
+                    elif action == "withdraw":
+                        if accounts[username]["balance"] >= amount:
+                            accounts[username]["balance"] -= amount
+                            response = {"status": "success", "message": "Withdrawal Successful"}
+                        else:
+                            response = {"status": "error", "message": "Insufficient Funds!"}
+            elif action == "balance":
+                balance_request = request["data"]
+                mac = request["mac"]
+
+                key = SHA256.new(master_secret_key).digest()
+                encryption_key = key[:16]
+                mac_key = key[16:]
+
+                decrypted_balance_request = decrypt_message(balance_request, encryption_key)
+
+                if not verify_mac(decrypted_balance_request, mac, mac_key):
+                    response = {"status": "error", "message": "MAC Verification Failed"}
+                else:
+                    balance_message = f"{username}: {accounts[username]["balance"]}"
+                    encrypted_balance = encrypt_message(balance_message, encryption_key)
+                    mac_balance = generate_mac(balance_message, mac_key)
+                    response = {"status": "success", "encrypted_balance": encrypted_balance, "mac": mac_balance}
 
         else:
-            response = {"status": "error", "message": "Invalid action"}
+            response = {"status": "error", "message": "Invalid Action!"}
 
         client_socket.sendall(json.dumps(response).encode())
 

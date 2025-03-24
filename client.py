@@ -1,18 +1,8 @@
 import socket
 import json
 import base64
-from Crypto.Cipher import AES
-from Crypto.Hash import HMAC, SHA256
-
-def encrypt_message(message, key):
-    cipher = AES.new(key, AES.MODE_EAX)
-    nonce = cipher.nonce
-    ciphertext, tag = cipher.encrypt_and_digest(message.encode())
-    return base64.b64encode(nonce + tag + ciphertext).decode()
-
-def generate_mac(message, mac_key):
-    hmac = HMAC.new(mac_key, message.encode(), SHA256)
-    return base64.b64encode(hmac.digest()).decode()
+from Crypto.Hash import SHA256
+from utils import encrypt_message, decrypt_message, generate_mac, verify_mac
 
 def communicate_with_bank(request):
     bank_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -26,13 +16,22 @@ def register():
     username = input("Enter a New Username: ")
     password = input("Enter a New Password: ")
     
+    # Send the registration request to the bank server
     response = communicate_with_bank({"action": "register", "username": username, "password": password})
-    print(response["message"])
+    print(response["message"] + "\nProceeding to Log In...")
+    
+    if response["status"] == "success":
+        # Automatically log the user in after successful registration
+        username, master_secret = authenticate()
+        return username, master_secret
+
+    return None, None  # Return None if registration fails
 
 def authenticate():
     username = input("Enter Username: ")
     password = input("Enter Password: ")
 
+    # Send authentication request to bank server
     response = communicate_with_bank({"action": "authenticate", "username": username, "password": password})
     if response["status"] == "success":
         print("Authentication Successful!")
@@ -46,12 +45,14 @@ def main():
     choice = input("New User/Existing User: ")
 
     if choice == "1":
-        register()
-        return
-
-    username, master_secret = authenticate()
-    if not username:
-        return
+        username, master_secret = register()
+        if not username: 
+            return 
+        
+    if choice == "2":
+        username, master_secret = authenticate()
+        if not username:
+            return
 
     key = SHA256.new(master_secret).digest()
     encryption_key = key[:16]
@@ -59,7 +60,7 @@ def main():
 
     while True:
         print("\n1. Deposit\n2. Withdraw\n3. Check Balance\n4. Exit")
-        choice = input("How Many We Help You Today!")
+        choice = input("How Many We Help You Today! ")
 
         if choice in ["1", "2"]:
             amount = input("Enter Amount: ")
@@ -77,8 +78,26 @@ def main():
             print(transaction_response["message"])
 
         elif choice == "3":
-            transaction_response = communicate_with_bank({"action": "balance", "username": username})
-            print(f"Balance: {transaction_response['balance']}")
+            message = f"{username}: balance inquiry"
+            encrypted_data = encrypt_message(message, encryption_key)
+            mac = generate_mac(message, mac_key)
+            transaction_response = communicate_with_bank({
+                "action": "balance", 
+                "username": username,
+                "data": encrypted_data,
+                "mac": mac
+            })
+            if transaction_response["status"] == "success":
+                encrypted_balance = transaction_response["encrypted_balance"]
+                balance_mac = transaction_response["mac"]
+                decrypted_balance = decrypt_message(encrypted_balance, encryption_key)
+                _, balance = decrypted_balance.split(": ")                
+                if not verify_mac(decrypted_balance, balance_mac, mac_key):
+                    print("Integrity check failed!")
+                else:
+                    print(f"Balance: {balance}")
+            else:
+                print(transaction_response["message"])
 
         elif choice == "4":
             print("Exiting ATM...")

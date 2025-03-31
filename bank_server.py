@@ -4,14 +4,34 @@ import bcrypt
 import json
 import os
 import base64
+import datetime
 from Crypto.Hash import SHA256
 from utils import encrypt_message, decrypt_message, generate_mac, verify_mac
+from dotenv import load_dotenv
+
+LOG_FILE = "audit_transactions.txt"
+
+load_dotenv()
 
 # Store User Accounts
 accounts = {}
 
 # Master Secret Key
-master_secret_key = os.urandom(32)
+master_secret_key = base64.b64decode(os.getenv("MASTER_SECRET_KEY"))
+
+def audit_transaction(username, action, encryption_key, mac_key):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    audit_message = f"{username}: {action} at {timestamp}"
+
+    encrypted_audit_message = encrypt_message(audit_message, encryption_key)
+    audit_mac = generate_mac(audit_message, mac_key)
+
+    if not os.path.exists(LOG_FILE):
+            with open(LOG_FILE, "w") as log_file:
+                log_file.write("")
+
+    with open(LOG_FILE, "a") as log_file:
+        log_file.write(json.dumps({"Transaction": encrypted_audit_message, "MAC": audit_mac}) + "\n")
 
 def handle_client(client_socket):
     try:
@@ -61,6 +81,9 @@ def handle_client(client_socket):
                             response = {"status": "success", "message": "Withdrawal Successful"}
                         else:
                             response = {"status": "error", "message": "Insufficient Funds!"}
+               
+                audit_transaction(username, action, encryption_key, mac_key)
+
             elif action == "balance":
                 balance_request = request["data"]
                 mac = request["mac"]
@@ -78,6 +101,8 @@ def handle_client(client_socket):
                     encrypted_balance = encrypt_message(balance_message, encryption_key)
                     mac_balance = generate_mac(balance_message, mac_key)
                     response = {"status": "success", "encrypted_balance": encrypted_balance, "mac": mac_balance}
+
+                audit_transaction(username, action, encryption_key, mac_key)
 
         else:
             response = {"status": "error", "message": "Invalid Action!"}

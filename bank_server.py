@@ -117,7 +117,7 @@ def handle_client(client_socket):
 def start_bank_server():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("127.0.0.1", 8000))
-    server.listen(5)
+    server.listen(10)
     print("Bank Server Running...")
 
     while True:
